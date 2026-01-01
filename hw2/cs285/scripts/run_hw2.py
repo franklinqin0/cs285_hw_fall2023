@@ -27,8 +27,8 @@ def run_training_loop(args):
     ptu.init_gpu(use_gpu=not args.no_gpu, gpu_id=args.which_gpu)
 
     # make the gym environment
-    env = gym.make(args.env_name, render_mode="rgb_array")
-    discrete = isinstance(env.action_space, gym.spaces.Discrete)
+    env = gym.make_vec(args.env_name, num_envs=4, render_mode="rgb_array")
+    discrete = isinstance(env.single_action_space, gym.spaces.Discrete)
 
     # add action noise, if needed
     if args.action_noise_std > 0:
@@ -37,14 +37,19 @@ def run_training_loop(args):
 
     max_ep_len = args.ep_len or env.spec.max_episode_steps
 
-    ob_dim = env.observation_space.shape[0]
-    ac_dim = env.action_space.n if discrete else env.action_space.shape[0]
+    # Get dimensions from single environment in vectorized env
+    ob_dim = env.single_observation_space.shape[0]
+    ac_dim = env.single_action_space.n if discrete else env.single_action_space.shape[0]
 
     # simulation timestep, will be used for video saving
     if hasattr(env, "model"):
         fps = 1 / env.model.opt.timestep
     else:
-        fps = env.env.metadata["render_fps"]
+        # For vectorized environments, access metadata from the spec or unwrapped env
+        if hasattr(env, 'metadata') and 'render_fps' in env.metadata:
+            fps = env.metadata["render_fps"]
+        else:
+            fps = 30  # default fallback
 
     # initialize agent
     agent = PGAgent(

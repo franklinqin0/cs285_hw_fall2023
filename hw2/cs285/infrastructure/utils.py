@@ -14,7 +14,7 @@ from typing import Dict, Tuple, List
 def sample_trajectory(
     env: gym.Env, policy: MLPPolicy, max_length: int, render: bool = False
 ) -> Dict[str, np.ndarray]:
-    """Sample a rollout in the environment from a policy."""
+    """Sample a rollout in the environment from a policy (non-vectorized)."""
     ob, _ = env.reset()
     obs, acs, rewards, next_obs, terminals, image_obs = [], [], [], [], [], []
     steps = 0
@@ -62,6 +62,107 @@ def sample_trajectory(
     }
 
 
+def sample_trajectories_vectorized(
+    env: gym.vector.VectorEnv,
+    policy: MLPPolicy,
+    min_timesteps_per_batch: int,
+    max_length: int,
+    render: bool = False,
+) -> Tuple[List[Dict[str, np.ndarray]], int]:
+    """Collect rollouts using policy in a vectorized environment."""
+    num_envs = env.num_envs
+    
+    # Initialize storage for each environment
+    obs_lists = [[] for _ in range(num_envs)]
+    acs_lists = [[] for _ in range(num_envs)]
+    rewards_lists = [[] for _ in range(num_envs)]
+    next_obs_lists = [[] for _ in range(num_envs)]
+    terminals_lists = [[] for _ in range(num_envs)]
+    image_obs_lists = [[] for _ in range(num_envs)]
+    
+    # Track steps per environment
+    steps = np.zeros(num_envs, dtype=np.int32)
+    
+    # Completed trajectories
+    trajs = []
+    total_timesteps = 0
+    
+    # Reset all environments
+    obs, _ = env.reset()  # obs shape: (num_envs, ob_dim)
+    
+    while total_timesteps < min_timesteps_per_batch:
+        # Render if needed - for vectorized envs, try to get rendered frames
+        if render:
+            try:
+                if hasattr(env, 'call'):
+                    # For AsyncVectorEnv, use call method to render from sub-environments
+                    imgs = env.call('render')
+                elif hasattr(env, 'render'):
+                    imgs = env.render()
+                else:
+                    imgs = None
+                
+                if imgs is not None:
+                    if isinstance(imgs, np.ndarray) and imgs.ndim == 4:
+                        # Shape: (num_envs, H, W, C)
+                        for i, img in enumerate(imgs):
+                            image_obs_lists[i].append(
+                                cv2.resize(img, dsize=(250, 250), interpolation=cv2.INTER_CUBIC)
+                            )
+                    elif isinstance(imgs, (list, tuple)):
+                        for i, img in enumerate(imgs):
+                            if img is not None:
+                                image_obs_lists[i].append(
+                                    cv2.resize(img, dsize=(250, 250), interpolation=cv2.INTER_CUBIC)
+                                )
+            except Exception:
+                pass  # Skip rendering if it fails
+        
+        # Get actions for all observations (batched)
+        acs = policy.get_action(obs)  # shape: (num_envs, ac_dim) or (num_envs,)
+        
+        # Step all environments
+        next_obs, rews, dones, truncs, infos = env.step(acs)
+        steps += 1
+        
+        # Check for episode end (done, truncated, or max_length)
+        rollout_dones = dones | truncs | (steps >= max_length)
+        
+        # Record data for each environment
+        for i in range(num_envs):
+            obs_lists[i].append(obs[i])
+            acs_lists[i].append(acs[i])
+            rewards_lists[i].append(rews[i])
+            next_obs_lists[i].append(next_obs[i])
+            terminals_lists[i].append(rollout_dones[i])
+            
+            # If this environment's episode is done, save trajectory
+            if rollout_dones[i]:
+                traj = {
+                    "observation": np.array(obs_lists[i], dtype=np.float32),
+                    "image_obs": np.array(image_obs_lists[i], dtype=np.uint8) if image_obs_lists[i] else np.array([], dtype=np.uint8),
+                    "reward": np.array(rewards_lists[i], dtype=np.float32),
+                    "action": np.array(acs_lists[i], dtype=np.float32),
+                    "next_observation": np.array(next_obs_lists[i], dtype=np.float32),
+                    "terminal": np.array(terminals_lists[i], dtype=np.float32),
+                }
+                trajs.append(traj)
+                total_timesteps += len(rewards_lists[i])
+                
+                # Reset storage for this environment
+                obs_lists[i] = []
+                acs_lists[i] = []
+                rewards_lists[i] = []
+                next_obs_lists[i] = []
+                terminals_lists[i] = []
+                image_obs_lists[i] = []
+                steps[i] = 0
+        
+        obs = next_obs
+    
+    return trajs, total_timesteps
+
+
 def sample_trajectories(
     env: gym.Env,
     policy: MLPPolicy,
@@ -70,6 +171,12 @@ def sample_trajectories(
     render: bool = False,
 ) -> Tuple[List[Dict[str, np.ndarray]], int]:
     """Collect rollouts using policy until we have collected min_timesteps_per_batch steps."""
+    # Check if environment is vectorized (handle both gym.vector and gymnasium.experimental.vector)
+    is_vectorized = hasattr(env, 'num_envs') and env.num_envs > 1
+    if is_vectorized:
+        return sample_trajectories_vectorized(env, policy, min_timesteps_per_batch, max_length, render)
+    
+    # Original non-vectorized implementation
     timesteps_this_batch = 0
     trajs = []
     while timesteps_this_batch < min_timesteps_per_batch:
@@ -86,6 +193,19 @@ def sample_n_trajectories(
     env: gym.Env, policy: MLPPolicy, ntraj: int, max_length: int, render: bool = False
 ):
     """Collect ntraj rollouts."""
+    # For vectorized envs, use the vectorized sampling and collect enough trajectories
+    is_vectorized = hasattr(env, 'num_envs') and env.num_envs > 1
+    if is_vectorized:
+        trajs = []
+        while len(trajs) < ntraj:
+            # Sample enough timesteps to likely get at least one trajectory per env
+            new_trajs, _ = sample_trajectories_vectorized(
+                env, policy, max_length * env.num_envs, max_length, render
+            )
+            trajs.extend(new_trajs)
+        return trajs[:ntraj]
+    
+    # Original non-vectorized implementation
     trajs = []
     for _ in range(ntraj):
         # collect rollout
