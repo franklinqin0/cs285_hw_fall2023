@@ -77,7 +77,7 @@ def run_training_loop(config: dict, logger: Logger, args: argparse.Namespace):
     # Replay buffer
     replay_buffer = ReplayBuffer(capacity=config["total_steps"])
 
-    observation = env.reset()
+    observation, _ = env.reset()
 
     recent_observations = []
 
@@ -105,7 +105,7 @@ def run_training_loop(config: dict, logger: Logger, args: argparse.Namespace):
 
         # Handle episode termination
         if done:
-            observation = env.reset()
+            observation, _ = env.reset()
 
             logger.log_scalar(info["episode"]["r"], "train_return", step)
             logger.log_scalar(info["episode"]["l"], "train_ep_len", step)

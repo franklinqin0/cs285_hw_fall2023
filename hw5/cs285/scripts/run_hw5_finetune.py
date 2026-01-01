@@ -51,7 +51,7 @@ def run_training_loop(config: dict, logger: Logger, args: argparse.Namespace):
     # Replay buffer
     replay_buffer = ReplayBuffer(capacity=config["total_steps"])
 
-    observation = env.reset()
+    observation, _ = env.reset()
 
     recent_observations = []
 

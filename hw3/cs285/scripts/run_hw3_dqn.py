@@ -75,7 +75,7 @@ def run_training_loop(config: dict, logger: Logger, args: argparse.Namespace):
     def reset_env_training():
         nonlocal observation
 
-        observation = env.reset()
+        observation, _ = env.reset()
 
         assert not isinstance(
             observation, tuple

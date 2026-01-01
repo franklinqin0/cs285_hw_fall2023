@@ -61,7 +61,7 @@ def run_training_loop(config: dict, logger: Logger, args: argparse.Namespace):
 
     replay_buffer = ReplayBuffer(config["replay_buffer_capacity"])
 
-    observation = env.reset()
+    observation, _ = env.reset()
 
     for step in tqdm.trange(config["total_steps"], dynamic_ncols=True):
         if step < config["random_steps"]:
@@ -83,7 +83,7 @@ def run_training_loop(config: dict, logger: Logger, args: argparse.Namespace):
         if done:
             logger.log_scalar(info["episode"]["r"], "train_return", step)
             logger.log_scalar(info["episode"]["l"], "train_ep_len", step)
-            observation = env.reset()
+            observation, _ = env.reset()
         else:
             observation = next_observation
 
