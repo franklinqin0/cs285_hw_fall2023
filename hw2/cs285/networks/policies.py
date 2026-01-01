@@ -95,21 +95,46 @@ class MLPPolicyPG(MLPPolicy):
         obs: np.ndarray,
         actions: np.ndarray,
         advantages: np.ndarray,
+        old_log_probs: np.ndarray = None,
+        clip_eps: float = 0.2,
+        entropy_coef: float = 0.01,
     ) -> dict:
-        """Implements the policy gradient actor update."""
+        """Implements PPO-style policy gradient update with clipping and entropy regularization."""
         obs = ptu.from_numpy(obs)
         actions = ptu.from_numpy(actions)
         advantages = ptu.from_numpy(advantages)
 
-        # TODO: implement the policy gradient actor update.
+        # Compute new log probabilities and entropy
         dist = self.forward(obs)
         log_probs = dist.log_prob(actions) # (batch_size, action_dim)
         if log_probs.dim() > 1:
             log_probs = log_probs.sum(-1) # sum over action_dim if continuous
-        loss = -(log_probs * advantages).mean() # negative for gradient ascent
+        
+        entropy = dist.entropy()
+        if entropy.dim() > 1:
+            entropy = entropy.sum(-1)
+        
+        # PPO-style clipped importance sampling
+        if old_log_probs is not None:
+            old_log_probs = ptu.from_numpy(old_log_probs)
+            ratio = torch.exp(log_probs - old_log_probs)
+            # Clipped surrogate objective
+            clipped_ratio = torch.clamp(ratio, 1 - clip_eps, 1 + clip_eps)
+            policy_loss = -torch.min(ratio * advantages, clipped_ratio * advantages).mean()
+        else:
+            ratio = torch.ones_like(log_probs)
+            policy_loss = -(log_probs * advantages).mean()
+        
+        # Add entropy bonus for exploration
+        entropy_loss = -entropy_coef * entropy.mean()
+        
+        loss = policy_loss + entropy_loss
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
+        
         return {
-            "Actor Loss": ptu.to_numpy(loss),
+            "Actor Loss": ptu.to_numpy(policy_loss),
+            "Entropy": ptu.to_numpy(entropy.mean()),
+            "Importance Ratio Mean": ptu.to_numpy(ratio.mean()),
         }
