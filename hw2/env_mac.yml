@@ -1,0 +1,34 @@
+name: cs285_hw2
+channels:
+  - conda-forge
+  - pytorch
+  - apple
+dependencies:
+  # Core Python
+  - python=3.10
+  
+  # PyTorch (Mac optimized)
+  # - pytorch=2.3.1
+  # - torchvision=0.18.1
+  # - torchaudio=2.3.1
+  
+  # RL frameworks
+  - pip
+  - pip:
+      # Pure Python packages via pip
+      - gymnasium[classic_control]==0.29.1
+      - gymnasium[box2d]==0.29.1
+      - mujoco==3.1.4
+      - swig==4.2.1
+      
+      # Visualization
+      - matplotlib==3.8.4
+      - opencv-python==4.9.0.80
+      - moviepy==1.0.3
+      - pyvirtualdisplay==3.0
+      - tensorboard==2.16.2
+      - tensorboardx==2.6.2.2
+      
+      # Development
+      - ipython==8.23.0
+      - ipdb==0.13.13
