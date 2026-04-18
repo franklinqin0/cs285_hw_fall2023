@@ -1,6 +1,6 @@
 from typing import Tuple, Optional
 
-import gym
+import gymnasium as gym
 
 import numpy as np
 import torch
@@ -10,9 +10,9 @@ from cs285.networks.mlp_policy import MLPPolicy
 from cs285.networks.state_action_value_critic import StateActionCritic
 import cs285.infrastructure.pytorch_util as ptu
 
-from gym.wrappers.rescale_action import RescaleAction
-from gym.wrappers.clip_action import ClipAction
-from gym.wrappers.record_episode_statistics import RecordEpisodeStatistics
+from gymnasium.wrappers.rescale_action import RescaleAction
+from gymnasium.wrappers.clip_action import ClipAction
+from gymnasium.wrappers.record_episode_statistics import RecordEpisodeStatistics
 
 
 def sac_config(

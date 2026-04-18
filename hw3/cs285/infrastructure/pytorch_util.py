@@ -69,6 +69,9 @@ def init_gpu(use_gpu=True, gpu_id=0):
     if torch.cuda.is_available() and use_gpu:
         device = torch.device("cuda:" + str(gpu_id))
         print("Using GPU id {}".format(gpu_id))
+    elif torch.backends.mps.is_available() and use_gpu:
+        device = torch.device("mps")
+        print("Using MPS (Apple Silicon GPU).")
     else:
         device = torch.device("cpu")
         print("Using CPU.")
@@ -82,10 +85,26 @@ def from_numpy(data: Union[np.ndarray, dict], **kwargs):
     if isinstance(data, dict):
         return {k: from_numpy(v) for k, v in data.items()}
     else:
-        data = torch.from_numpy(data, **kwargs)
+        data = np.asarray(data).copy()
+        data = torch.frombuffer(data, dtype=_numpy_to_torch_dtype(data.dtype)).reshape(data.shape).clone()
         if data.dtype == torch.float64:
             data = data.float()
         return data.to(device)
+
+
+_NUMPY_TO_TORCH_DTYPE = {
+    np.dtype('float32'): torch.float32,
+    np.dtype('float64'): torch.float64,
+    np.dtype('int32'): torch.int32,
+    np.dtype('int64'): torch.int64,
+    np.dtype('bool'): torch.bool,
+    np.dtype('uint8'): torch.uint8,
+    np.dtype('int16'): torch.int16,
+    np.dtype('int8'): torch.int8,
+}
+
+def _numpy_to_torch_dtype(np_dtype):
+    return _NUMPY_TO_TORCH_DTYPE.get(np_dtype, torch.float32)
 
 
 def to_numpy(tensor: Union[torch.Tensor, dict]):

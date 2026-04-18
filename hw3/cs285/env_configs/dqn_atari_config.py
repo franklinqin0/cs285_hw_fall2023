@@ -1,7 +1,7 @@
 from typing import Optional, Tuple
 
-import gym
-from gym.wrappers.frame_stack import FrameStack
+import gymnasium as gym
+from gymnasium.wrappers.frame_stack import FrameStack
 
 import numpy as np
 import torch

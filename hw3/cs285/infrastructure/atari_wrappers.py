@@ -1,9 +1,9 @@
 import numpy as np
-import gym
-from gym import spaces
-from gym.wrappers.frame_stack import FrameStack
-from gym.wrappers.atari_preprocessing import AtariPreprocessing
-from gym.wrappers.record_episode_statistics import RecordEpisodeStatistics
+import gymnasium as gym
+from gymnasium import spaces
+from gymnasium.wrappers.frame_stack import FrameStack
+from gymnasium.wrappers.atari_preprocessing import AtariPreprocessing
+from gymnasium.wrappers.record_episode_statistics import RecordEpisodeStatistics
 
 
 class FireResetEnv(gym.Wrapper):
@@ -15,13 +15,13 @@ class FireResetEnv(gym.Wrapper):
 
     def reset(self, **kwargs):
         self.env.reset(**kwargs)
-        obs, _, done, _ = self.env.step(1)
-        if done:
+        obs, _, terminated, truncated, _ = self.env.step(1)
+        if terminated or truncated:
             self.env.reset(**kwargs)
-        obs, _, done, _ = self.env.step(2)
-        if done:
+        obs, _, terminated, truncated, _ = self.env.step(2)
+        if terminated or truncated:
             self.env.reset(**kwargs)
-        return obs
+        return obs, {}
 
     def step(self, ac):
         return self.env.step(ac)
