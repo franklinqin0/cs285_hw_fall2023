@@ -1,6 +1,7 @@
 import os
 from tensorboardX import SummaryWriter
 import numpy as np
+import imageio
 
 class Logger:
     def __init__(self, log_dir, n_logged_samples=10, summary_writer=None):
@@ -48,6 +49,16 @@ class Logger:
         videos = np.stack(videos[:max_videos_to_save], 0)
         self.log_video(videos, video_title, step, fps=fps)
 
+        # save videos as mp4 files
+        video_dir = os.path.join(self._log_dir, "videos")
+        os.makedirs(video_dir, exist_ok=True)
+        for i in range(max_videos_to_save):
+            # videos shape: [N, T, C, H, W] -> need [T, H, W, C]
+            frames = np.transpose(videos[i], [0, 2, 3, 1])
+            path = os.path.join(video_dir, f"{video_title}_step{step}_{i}.mp4")
+            imageio.mimsave(path, frames, fps=fps)
+        print(f"Saved {max_videos_to_save} video(s) to {video_dir}")
+
     def log_figures(self, figure, name, step, phase):
         """figure: matplotlib.pyplot figure handle"""
         assert figure.shape[0] > 0, "Figure logging requires input shape [batch x figures]!"
@@ -56,11 +67,6 @@ class Logger:
     def log_figure(self, figure, name, step, phase):
         """figure: matplotlib.pyplot figure handle"""
         self._summ_writer.add_figure('{}_{}'.format(name, phase), figure, step)
-
-    def log_graph(self, array, name, step, phase):
-        """figure: matplotlib.pyplot figure handle"""
-        im = plot_graph(array)
-        self._summ_writer.add_image('{}_{}'.format(name, phase), im, step)
 
     def dump_scalars(self, log_path=None):
         log_path = os.path.join(self._log_dir, "scalar_data.json") if log_path is None else log_path
