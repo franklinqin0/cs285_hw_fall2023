@@ -71,13 +71,14 @@ def run_training_loop(config: dict, logger: Logger, args: argparse.Namespace):
             action = ...
 
         # Step the environment and add the data to the replay buffer
-        next_observation, reward, done, info = env.step(action)
+        next_observation, reward, terminated, truncated, info = env.step(action)
+        done = terminated or truncated
         replay_buffer.insert(
             observation=observation,
             action=action,
             reward=reward,
             next_observation=next_observation,
-            done=done and not info.get("TimeLimit.truncated", False),
+            done=terminated,
         )
 
         if done:
