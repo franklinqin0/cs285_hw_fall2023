@@ -12,7 +12,7 @@ class ReplayBuffer:
         self.dones = None
 
     def sample(self, batch_size):
-        rand_indices = np.random.randint(0, self.size, size=(batch_size,)) % self.max_size
+        rand_indices = np.random.randint(0, len(self), size=(batch_size,))
         return {
             "observations": self.observations[rand_indices],
             "actions": self.actions[rand_indices],
@@ -22,7 +22,7 @@ class ReplayBuffer:
         }
 
     def __len__(self):
-        return self.size
+        return min(self.size, self.max_size)
 
     def insert(
         self,
@@ -110,9 +110,7 @@ class MemoryEfficientReplayBuffer:
         self.recent_observation_framebuffer_idcs = None
 
     def sample(self, batch_size):
-        rand_indices = (
-            np.random.randint(0, self.size, size=(batch_size,)) % self.max_size
-        )
+        rand_indices = np.random.randint(0, len(self), size=(batch_size,))
 
         observation_framebuffer_idcs = (
             self.observation_framebuffer_idcs[rand_indices] % self.max_framebuffer_size
@@ -131,7 +129,7 @@ class MemoryEfficientReplayBuffer:
         }
 
     def __len__(self):
-        return self.size
+        return min(self.size, self.max_size)
 
     def _insert_frame(self, frame: np.ndarray) -> int:
         """
@@ -144,7 +142,8 @@ class MemoryEfficientReplayBuffer:
         ), "Single-frame observation should have dimensions (H, W)"
         assert frame.dtype == np.uint8, "Observation should be uint8 (0-255)"
 
-        self.framebuffer[self.framebuffer_idx] = frame
+        self.framebuffer[self.framebuffer_idx % self.max_framebuffer_size] = frame
+        # Keep logical frame indices increasing so frame histories span wraparound.
         frame_idx = self.framebuffer_idx
         self.framebuffer_idx = self.framebuffer_idx + 1
 
