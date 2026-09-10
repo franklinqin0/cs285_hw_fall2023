@@ -188,11 +188,11 @@ class SoftActorCritic(nn.Module):
         with torch.no_grad():
             # TODO(student)
             # Sample from the actor
-            next_action_distribution: torch.distributions.Distribution = ...
-            next_action = ...
+            next_action_distribution: torch.distributions.Distribution = self.actor(next_obs)
+            next_action = next_action_distribution.sample()
 
             # Compute the next Q-values for the sampled actions
-            next_qs = ...
+            next_qs = self.target_critic(next_obs, next_action)
 
             # Handle Q-values from multiple different target critic networks (if necessary)
             # (For double-Q, clip-Q, etc.)
@@ -205,11 +205,11 @@ class SoftActorCritic(nn.Module):
 
             if self.use_entropy_bonus and self.backup_entropy:
                 # TODO(student): Add entropy bonus to the target values for SAC
-                next_action_entropy = ...
-                next_qs += ...
+                next_action_entropy = self.entropy(next_action_distribution)
+                next_qs += self.temperature * next_action_entropy
 
             # Compute the target Q-value
-            target_values: torch.Tensor = ...
+            target_values: torch.Tensor = reward + self.discount * (1-done) * next_qs
             assert target_values.shape == (
                 self.num_critic_networks,
                 batch_size
@@ -217,11 +217,11 @@ class SoftActorCritic(nn.Module):
 
         # TODO(student): Update the critic
         # Predict Q-values
-        q_values = ...
+        q_values = self.critic(obs=obs, action=action)
         assert q_values.shape == (self.num_critic_networks, batch_size), q_values.shape
 
         # Compute loss
-        loss: torch.Tensor = ...
+        loss: torch.Tensor = self.critic_loss(q_values, target_values)
 
         self.critic_optimizer.zero_grad()
         loss.backward()
@@ -240,7 +240,7 @@ class SoftActorCritic(nn.Module):
 
         # TODO(student): Compute the entropy of the action distribution.
         # Note: Think about whether to use .rsample() or .sample() here...
-        return ...
+        return -action_distribution.log_prob(action_distribution.rsample())
 
     def actor_loss_reinforce(self, obs: torch.Tensor):
         batch_size = obs.shape[0]
