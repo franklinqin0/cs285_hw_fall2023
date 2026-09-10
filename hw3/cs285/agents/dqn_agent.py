@@ -68,17 +68,24 @@ class DQNAgent(nn.Module):
         """Update the DQN critic, and return stats for logging."""
         (batch_size,) = reward.shape
 
-        # Compute target values
+        # Compute TD targets without tracking gradients.
         with torch.no_grad():
-            # TODO(student): compute target values
             next_qa_values = self.target_critic(next_obs)
 
             if self.use_double_q:
+                # Double DQN: select actions with the online critic.
                 next_action = torch.argmax(self.critic(next_obs), dim=1)
             else:
+                # Standard DQN: select actions with the target critic.
                 next_action = torch.argmax(next_qa_values, dim=1)
-            
-            next_q_values = torch.gather(next_qa_values, dim=1, index=next_action.unsqueeze(1)).squeeze(1)
+
+            # Evaluate the selected actions using the target critic.
+            # next_q_values[i] = next_qa_values[i, next_action[i]]
+            next_q_values = torch.gather(
+                next_qa_values, dim=1, index=next_action.unsqueeze(1)
+            ).squeeze(1)
+
+            # Bootstrap from the next state only for nonterminal transitions.
             target_values = reward + self.discount * next_q_values * (1 - done.float())
 
         # TODO(student): train the critic with the target values
