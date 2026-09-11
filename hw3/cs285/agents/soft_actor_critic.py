@@ -248,11 +248,12 @@ class SoftActorCritic(nn.Module):
         batch_size = obs.shape[0]
 
         # TODO(student): Generate an action distribution
-        action_distribution: torch.distributions.Distribution = ...
+        action_distribution: torch.distributions.Distribution = self.actor(obs)
 
         with torch.no_grad():
-            # TODO(student): draw num_actor_samples samples from the action distribution for each batch element
-            action = ...
+            # REINFORCE is a score-function estimator: the gradient rides on log_prob(action),
+            # so the action must be a constant. Use .sample() (not .rsample()) to detach it.
+            action = action_distribution.sample(sample_shape=(self.num_actor_samples,))
             assert action.shape == (
                 self.num_actor_samples,
                 batch_size,
@@ -260,7 +261,7 @@ class SoftActorCritic(nn.Module):
             ), action.shape
 
             # TODO(student): Compute Q-values for the current state-action pair
-            q_values = ...
+            q_values = self.critic(obs=obs, action=action)
             assert q_values.shape == (
                 self.num_critic_networks,
                 self.num_actor_samples,
@@ -273,8 +274,8 @@ class SoftActorCritic(nn.Module):
 
         # Do REINFORCE: calculate log-probs and use the Q-values
         # TODO(student)
-        log_probs = ...
-        loss = ...
+        log_probs = action_distribution.log_prob(action)
+        loss = -torch.mean(log_probs * advantage)
 
         return loss, torch.mean(self.entropy(action_distribution))
 
@@ -284,15 +285,16 @@ class SoftActorCritic(nn.Module):
         # Sample from the actor
         action_distribution: torch.distributions.Distribution = self.actor(obs)
 
-        # TODO(student): Sample actions
-        # Note: Think about whether to use .rsample() or .sample() here...
-        action = ...
+        # Pathwise gradient: .rsample() keeps a = mu_theta + sigma_theta * eps differentiable
+        # w.r.t. theta (NOT under no_grad here), so grad flows theta -> action -> Q -> loss.
+        action = action_distribution.rsample()
 
         # TODO(student): Compute Q-values for the sampled state-action pair
-        q_values = ...
+        q_values = self.critic(obs=obs, action=action)
 
-        # TODO(student): Compute the actor loss
-        loss = ...
+        # Maximize Q -> minimize -Q. mean() over the whole tensor collapses both the
+        # ensemble and batch dims (no min/backup: no bootstrap here, so no overestimation to fight).
+        loss = -torch.mean(q_values)
 
         return loss, torch.mean(self.entropy(action_distribution))
 
