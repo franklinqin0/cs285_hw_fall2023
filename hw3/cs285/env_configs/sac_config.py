@@ -45,6 +45,7 @@ def sac_config(
     temperature: float = 0.1,
     actor_fixed_std: Optional[float] = None,
     use_tanh: bool = True,
+    train_actor: bool = True,
 ):
     def make_critic(observation_shape: Tuple[int, ...], action_dim: int) -> nn.Module:
         return StateActionCritic(
@@ -94,7 +95,7 @@ def sac_config(
             ClipAction(
                 RescaleAction(
                     gym.make(
-                        env_name, render_mode="single_rgb_array" if render else None
+                        env_name, render_mode="rgb_array" if render else None
                     ),
                     -1,
                     1,
@@ -142,6 +143,7 @@ def sac_config(
             "target_critic_backup_type": target_critic_backup_type,
             "use_entropy_bonus": use_entropy_bonus,
             "backup_entropy": backup_entropy,
+            "train_actor": train_actor,
             "temperature": temperature,
             "target_update_period": target_update_period
             if not use_soft_target_update

@@ -1,6 +1,8 @@
 base_config: sac
 env_name: Pendulum-v1
 exp_name: sanity_pendulum
+# Check critic bootstrapping under a fixed policy before implementing actor losses.
+train_actor: false
 use_entropy_bonus: true
 temperature: 0.1
 # Use hard target update by default.

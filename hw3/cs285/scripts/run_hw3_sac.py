@@ -36,7 +36,7 @@ def run_training_loop(config: dict, logger: Logger, args: argparse.Namespace):
     render_env = config["make_env"](render=True)
 
     ep_len = config["ep_len"] or env.spec.max_episode_steps
-    batch_size = config["batch_size"] or batch_size
+    batch_size = config["batch_size"]
 
     discrete = isinstance(env.action_space, gym.spaces.Discrete)
     assert (
@@ -61,7 +61,9 @@ def run_training_loop(config: dict, logger: Logger, args: argparse.Namespace):
 
     replay_buffer = ReplayBuffer(config["replay_buffer_capacity"])
 
-    observation, _ = env.reset()
+    env.action_space.seed(args.seed)
+    eval_env.reset(seed=args.seed + 1)
+    observation, _ = env.reset(seed=args.seed)
 
     for step in tqdm.trange(config["total_steps"], dynamic_ncols=True):
         if step < config["random_steps"]:
@@ -90,14 +92,14 @@ def run_training_loop(config: dict, logger: Logger, args: argparse.Namespace):
 
         # Train the agent
         if step >= config["training_starts"]:
-            # TODO(student): Sample a batch of config["batch_size"] transitions from the replay buffer
-            batch = replay_buffer.sample(config["batch_size"])
+            # Train on a tensor batch from replay, rather than the latest transition.
+            batch = ptu.from_numpy(replay_buffer.sample(batch_size))
             update_info = agent.update(
-                observations=observation,
-                actions=action,
-                rewards=reward,
-                next_observations=next_observation,
-                dones=done,
+                observations=batch["observations"],
+                actions=batch["actions"],
+                rewards=batch["rewards"],
+                next_observations=batch["next_observations"],
+                dones=batch["dones"],
                 step=step
             )
 
@@ -108,11 +110,10 @@ def run_training_loop(config: dict, logger: Logger, args: argparse.Namespace):
             if step % args.log_interval == 0:
                 for k, v in update_info.items():
                     logger.log_scalar(v, k, step)
-                    logger.log_scalars
                 logger.flush()
 
         # Run evaluation
-        if step % args.eval_interval == 0:
+        if step % args.eval_interval == 0 or step == config["total_steps"] - 1:
             trajectories = utils.sample_n_trajectories(
                 eval_env,
                 policy=agent,
@@ -149,6 +150,16 @@ def run_training_loop(config: dict, logger: Logger, args: argparse.Namespace):
                     max_videos_to_save=args.num_render_trajectories,
                     video_title="eval_rollouts",
                 )
+
+    # Preserve the trained networks alongside TensorBoard logs for later inspection.
+    torch.save(
+        {"agent_state_dict": agent.state_dict(), "step": step, "seed": args.seed},
+        os.path.join(logger._log_dir, "checkpoint.pt"),
+    )
+    logger.flush()
+    env.close()
+    eval_env.close()
+    render_env.close()
 
 
 def main():

@@ -39,6 +39,7 @@ class SoftActorCritic(nn.Module):
         use_entropy_bonus: bool = False,
         temperature: float = 0.0,
         backup_entropy: bool = True,
+        train_actor: bool = True,
     ):
         super().__init__()
 
@@ -92,6 +93,7 @@ class SoftActorCritic(nn.Module):
         self.num_critic_updates = num_critic_updates
         self.soft_target_update_rate = soft_target_update_rate
         self.backup_entropy = backup_entropy
+        self.train_actor = train_actor
 
         self.critic_loss = nn.MSELoss()
 
@@ -153,7 +155,7 @@ class SoftActorCritic(nn.Module):
         elif self.target_critic_backup_type == "min":
             raise NotImplementedError
         elif self.target_critic_backup_type == "mean":
-            raise NotImplementedError
+            next_qs = next_qs.mean(dim=0)
         else:
             # Default, we don't need to do anything.
             pass
@@ -209,7 +211,7 @@ class SoftActorCritic(nn.Module):
                 next_qs += self.temperature * next_action_entropy
 
             # Compute the target Q-value
-            target_values: torch.Tensor = reward + self.discount * (1-done) * next_qs
+            target_values: torch.Tensor = reward + self.discount * (1 - done.float()) * next_qs
             assert target_values.shape == (
                 self.num_critic_networks,
                 batch_size
@@ -343,13 +345,26 @@ class SoftActorCritic(nn.Module):
         # TODO(student): Update the critic for num_critic_upates steps, and add the output stats to critic_infos
 
         # TODO(student): Update the actor
-        actor_info = ...
+        for _ in range(self.num_critic_updates):
+            critic_infos.append(
+                self.update_critic(observations, actions, rewards, next_observations, dones)
+            )
 
+        # The bootstrapping sanity check evaluates a fixed policy.
+        if self.train_actor:
+            actor_info = self.update_actor(observations)
+        else:
+            with torch.no_grad():
+                actor_info = {"entropy": self.entropy(self.actor(observations)).mean().item()}
         # TODO(student): Perform either hard or soft target updates.
         # Relevant variables:
         #  - step
         #  - self.target_update_period (None when using soft updates)
         #  - self.soft_target_update_rate (None when using hard updates)
+        if self.soft_target_update_rate is not None:
+            self.soft_update_target_critic(self.soft_target_update_rate)
+        elif (step + 1) % self.target_update_period == 0:
+            self.update_target_critic()
 
         # Average the critic info over all of the steps
         critic_info = {
@@ -357,7 +372,8 @@ class SoftActorCritic(nn.Module):
         }
 
         # Deal with LR scheduling
-        self.actor_lr_scheduler.step()
+        if self.train_actor:
+            self.actor_lr_scheduler.step()
         self.critic_lr_scheduler.step()
 
         return {
