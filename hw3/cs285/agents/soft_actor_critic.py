@@ -261,7 +261,9 @@ class SoftActorCritic(nn.Module):
             ), action.shape
 
             # TODO(student): Compute Q-values for the current state-action pair
-            q_values = self.critic(obs=obs, action=action)
+            # q_values = self.critic(obs=obs, action=action)
+            sampled_obs = obs.unsqueeze(0).expand(self.num_actor_samples, -1, -1)
+            q_values = self.critic(obs=sampled_obs, action=action)
             assert q_values.shape == (
                 self.num_critic_networks,
                 self.num_actor_samples,
