@@ -22,13 +22,30 @@ from cs285.infrastructure.logger import Logger
 from scripting_utils import make_logger, make_config
 
 import argparse
+import json
+
+
+def save_checkpoint(agent, logger, step, seed):
+    path = os.path.join(logger._log_dir, "checkpoint.pt")
+    torch.save(
+        {"agent_state_dict": agent.state_dict(), "step": step, "seed": seed},
+        path + ".tmp",
+    )
+    os.replace(path + ".tmp", path)
 
 
 def run_training_loop(config: dict, logger: Logger, args: argparse.Namespace):
+    torch.set_num_threads(args.torch_num_threads)
+    if args.no_distribution_validation or args.cuda_graph:
+        torch.distributions.Distribution.set_default_validate_args(False)
     # set random seeds
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
     ptu.init_gpu(use_gpu=not args.no_gpu, gpu_id=args.which_gpu)
+    if ptu.device.type == "cuda":
+        torch.cuda.set_device(ptu.device)
+    if args.cuda_graph and ptu.device.type != "cuda":
+        raise ValueError("--cuda_graph requires a CUDA GPU")
 
     # make the gym environment
     env = config["make_env"]()
@@ -60,6 +77,7 @@ def run_training_loop(config: dict, logger: Logger, args: argparse.Namespace):
     )
 
     replay_buffer = ReplayBuffer(config["replay_buffer_capacity"])
+    updater = agent
 
     env.action_space.seed(args.seed)
     eval_env.reset(seed=args.seed + 1)
@@ -94,13 +112,19 @@ def run_training_loop(config: dict, logger: Logger, args: argparse.Namespace):
         if step >= config["training_starts"]:
             # Train on a tensor batch from replay, rather than the latest transition.
             batch = ptu.from_numpy(replay_buffer.sample(batch_size))
-            update_info = agent.update(
+            if args.cuda_graph and updater is agent:
+                from cs285.infrastructure.sac_cuda_graph import SACGraphUpdater
+                capture_start = time.perf_counter()
+                updater = SACGraphUpdater(agent, batch)
+                print(f"CUDA graph ready in {time.perf_counter() - capture_start:.2f}s", flush=True)
+            update_info = updater.update(
                 observations=batch["observations"],
                 actions=batch["actions"],
                 rewards=batch["rewards"],
                 next_observations=batch["next_observations"],
                 dones=batch["dones"],
-                step=step
+                step=step,
+                log_stats=step % args.log_interval == 0,
             )
 
             # Logging
@@ -111,6 +135,9 @@ def run_training_loop(config: dict, logger: Logger, args: argparse.Namespace):
                 for k, v in update_info.items():
                     logger.log_scalar(v, k, step)
                 logger.flush()
+
+        if args.checkpoint_interval > 0 and (step + 1) % args.checkpoint_interval == 0:
+            save_checkpoint(agent, logger, step, args.seed)
 
         # Run evaluation
         if step % args.eval_interval == 0 or step == config["total_steps"] - 1:
@@ -152,10 +179,7 @@ def run_training_loop(config: dict, logger: Logger, args: argparse.Namespace):
                 )
 
     # Preserve the trained networks alongside TensorBoard logs for later inspection.
-    torch.save(
-        {"agent_state_dict": agent.state_dict(), "step": step, "seed": args.seed},
-        os.path.join(logger._log_dir, "checkpoint.pt"),
-    )
+    save_checkpoint(agent, logger, step, args.seed)
     logger.flush()
     env.close()
     eval_env.close()
@@ -174,6 +198,19 @@ def main():
     parser.add_argument("--no_gpu", "-ngpu", action="store_true")
     parser.add_argument("--which_gpu", "-g", default=0)
     parser.add_argument("--log_interval", type=int, default=1000)
+    parser.add_argument("--checkpoint_interval", type=int, default=50000)
+    parser.add_argument(
+        "--cuda_graph", action="store_true",
+        help="Capture fixed-batch SAC updates on CUDA; requires soft targets and constant LR, disables distribution validation.",
+    )
+    parser.add_argument(
+        "--torch_num_threads", type=int, default=1,
+        help="CPU threads for PyTorch; small SAC networks usually benefit from 1.",
+    )
+    parser.add_argument(
+        "--no_distribution_validation", action="store_true",
+        help="Skip distribution argument checks to reduce GPU synchronization; omit this flag for debugging.",
+    )
 
     args = parser.parse_args()
 
@@ -182,6 +219,10 @@ def main():
 
     config = make_config(args.config_file)
     logger = make_logger(logdir_prefix, config)
+    with open(args.config_file) as source:
+        config_yaml = yaml.safe_load(source)
+    with open(os.path.join(logger._log_dir, "run_config.json"), "w") as output:
+        json.dump({"config": config_yaml, "args": vars(args), "torch_version": torch.__version__}, output, indent=2)
 
     run_training_loop(config, logger, args)
 

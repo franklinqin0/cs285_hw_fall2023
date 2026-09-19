@@ -54,6 +54,8 @@ class SoftActorCritic(nn.Module):
             "reinforce",
             "reparametrize",
         ], f"{actor_gradient_type} is not a valid type of actor gradient update"
+        if target_critic_backup_type in ("doubleq", "redq"):
+            assert num_critic_networks >= 2, "Double-Q and REDQ need at least two critics"
 
         assert (
             target_update_period is not None or soft_target_update_rate is not None
@@ -107,7 +109,8 @@ class SoftActorCritic(nn.Module):
             observation = ptu.from_numpy(observation)[None]
 
             action_distribution: torch.distributions.Distribution = self.actor(observation)
-            action: torch.Tensor = action_distribution.sample()
+            # Under no_grad, rsample is detached and avoids torch.normal's CPU check.
+            action: torch.Tensor = action_distribution.rsample()
 
             assert action.shape == (1, self.action_dim), action.shape
             return ptu.to_numpy(action).squeeze(0)
@@ -151,11 +154,19 @@ class SoftActorCritic(nn.Module):
 
         # TODO(student): Implement the different backup strategies.
         if self.target_critic_backup_type == "doubleq":
-            raise NotImplementedError
+            next_qs = torch.roll(next_qs, shifts=1, dims=0)
         elif self.target_critic_backup_type == "min":
-            raise NotImplementedError
+            next_qs = next_qs.min(dim=0).values
         elif self.target_critic_backup_type == "mean":
             next_qs = next_qs.mean(dim=0)
+        elif self.target_critic_backup_type == "redq":
+            # Independently choose two distinct target critics per transition.
+            first = torch.randint(num_critic_networks, (1, batch_size), device=next_qs.device)
+            second = torch.randint(num_critic_networks - 1, (1, batch_size), device=next_qs.device)
+            second = second + (second >= first).long()
+            next_qs = torch.minimum(
+                next_qs.gather(0, first), next_qs.gather(0, second)
+            ).squeeze(0)
         else:
             # Default, we don't need to do anything.
             pass
@@ -179,10 +190,24 @@ class SoftActorCritic(nn.Module):
         reward: torch.Tensor,
         next_obs: torch.Tensor,
         done: torch.Tensor,
+        log_stats: bool = True,
+        tensor_stats: bool = False,
     ):
         """
         Update the critic networks by computing target values and minimizing Bellman error.
         """
+        loss, q_values, target_values = self.critic_loss_tensors(obs, action, reward, next_obs, done)
+        self.critic_optimizer.zero_grad()
+        loss.backward()
+        self.critic_optimizer.step()
+
+        if not log_stats:
+            return {}
+        stats = {"critic_loss": loss.detach(), "q_values": q_values.mean(), "target_values": target_values.mean()}
+        return stats if tensor_stats else {k: v.item() for k, v in stats.items()}
+
+    def critic_loss_tensors(self, obs, action, reward, next_obs, done):
+        """Tensor-only loss computation, also used by the optional compiler."""
         (batch_size,) = reward.shape
 
         # Compute target values
@@ -191,7 +216,7 @@ class SoftActorCritic(nn.Module):
             # TODO(student)
             # Sample from the actor
             next_action_distribution: torch.distributions.Distribution = self.actor(next_obs)
-            next_action = next_action_distribution.sample()
+            next_action = next_action_distribution.rsample()
 
             # Compute the next Q-values for the sampled actions
             next_qs = self.target_critic(next_obs, next_action)
@@ -225,15 +250,7 @@ class SoftActorCritic(nn.Module):
         # Compute loss
         loss: torch.Tensor = self.critic_loss(q_values, target_values)
 
-        self.critic_optimizer.zero_grad()
-        loss.backward()
-        self.critic_optimizer.step()
-
-        return {
-            "critic_loss": loss.item(),
-            "q_values": q_values.mean().item(),
-            "target_values": target_values.mean().item(),
-        }
+        return loss, q_values.detach(), target_values.detach()
 
     def entropy(self, action_distribution: torch.distributions.Distribution):
         """
@@ -251,9 +268,9 @@ class SoftActorCritic(nn.Module):
         action_distribution: torch.distributions.Distribution = self.actor(obs)
 
         with torch.no_grad():
-            # REINFORCE is a score-function estimator: the gradient rides on log_prob(action),
-            # so the action must be a constant. Use .sample() (not .rsample()) to detach it.
-            action = action_distribution.sample(sample_shape=(self.num_actor_samples,))
+            # REINFORCE needs detached actions. no_grad detaches rsample while
+            # avoiding the synchronizing std check in Normal.sample on CUDA.
+            action = action_distribution.rsample(sample_shape=(self.num_actor_samples,))
             assert action.shape == (
                 self.num_actor_samples,
                 batch_size,
@@ -300,37 +317,48 @@ class SoftActorCritic(nn.Module):
 
         return loss, torch.mean(self.entropy(action_distribution))
 
-    def update_actor(self, obs: torch.Tensor):
+    def update_actor(self, obs: torch.Tensor, log_stats: bool = True, tensor_stats: bool = False):
         """
         Update the actor by one gradient step using either REPARAMETRIZE or REINFORCE.
         """
 
-        if self.actor_gradient_type == "reparametrize":
-            loss, entropy = self.actor_loss_reparametrize(obs)
-        elif self.actor_gradient_type == "reinforce":
-            loss, entropy = self.actor_loss_reinforce(obs)
+        # Keep dQ/da for the policy gradient without computing unused dQ/dw.
+        critic_params = list(self.critics.parameters())
+        requires_grad = [p.requires_grad for p in critic_params]
+        try:
+            for p in critic_params:
+                p.requires_grad_(False)
+            if self.actor_gradient_type == "reparametrize":
+                loss, entropy = self.actor_loss_reparametrize(obs)
+            elif self.actor_gradient_type == "reinforce":
+                loss, entropy = self.actor_loss_reinforce(obs)
 
-        # Add entropy if necessary
-        if self.use_entropy_bonus:
-            loss -= self.temperature * entropy
+            # Add entropy if necessary
+            if self.use_entropy_bonus:
+                loss -= self.temperature * entropy
 
-        self.actor_optimizer.zero_grad()
-        loss.backward()
-        self.actor_optimizer.step()
+            self.actor_optimizer.zero_grad()
+            loss.backward()
+            self.actor_optimizer.step()
+        finally:
+            for p, enabled in zip(critic_params, requires_grad):
+                p.requires_grad_(enabled)
 
-        return {"actor_loss": loss.item(), "entropy": entropy.item()}
+        if not log_stats:
+            return {}
+        stats = {"actor_loss": loss.detach(), "entropy": entropy.detach()}
+        return stats if tensor_stats else {k: v.item() for k, v in stats.items()}
 
     def update_target_critic(self):
         self.soft_update_target_critic(1.0)
 
+    @torch.no_grad()
     def soft_update_target_critic(self, tau):
         for target_critic, critic in zip(self.target_critics, self.critics):
             for target_param, param in zip(
                 target_critic.parameters(), critic.parameters()
             ):
-                target_param.data.copy_(
-                    target_param.data * (1.0 - tau) + param.data * tau
-                )
+                target_param.lerp_(param, tau)
 
     def update(
         self,
@@ -340,6 +368,9 @@ class SoftActorCritic(nn.Module):
         next_observations: torch.Tensor,
         dones: torch.Tensor,
         step: int,
+        log_stats: bool = True,
+        tensor_stats: bool = False,
+        update_schedules: bool = True,
     ):
         """
         Update the actor and critic networks.
@@ -351,15 +382,21 @@ class SoftActorCritic(nn.Module):
         # TODO(student): Update the actor
         for _ in range(self.num_critic_updates):
             critic_infos.append(
-                self.update_critic(observations, actions, rewards, next_observations, dones)
+                self.update_critic(
+                    observations, actions, rewards, next_observations, dones,
+                    log_stats=log_stats,
+                    tensor_stats=tensor_stats,
+                )
             )
 
         # The bootstrapping sanity check evaluates a fixed policy.
         if self.train_actor:
-            actor_info = self.update_actor(observations)
+            actor_info = self.update_actor(observations, log_stats=log_stats, tensor_stats=tensor_stats)
         else:
             with torch.no_grad():
-                actor_info = {"entropy": self.entropy(self.actor(observations)).mean().item()}
+                # Preserve the entropy sample (and RNG sequence) between log steps.
+                entropy = self.entropy(self.actor(observations)).mean()
+                actor_info = {"entropy": entropy if tensor_stats else entropy.item()} if log_stats else {}
         # TODO(student): Perform either hard or soft target updates.
         # Relevant variables:
         #  - step
@@ -372,13 +409,13 @@ class SoftActorCritic(nn.Module):
 
         # Average the critic info over all of the steps
         critic_info = {
-            k: np.mean([info[k] for info in critic_infos]) for k in critic_infos[0]
+            k: (torch.stack([info[k] for info in critic_infos]).mean() if tensor_stats
+                else np.mean([info[k] for info in critic_infos])) for k in critic_infos[0]
         }
 
         # Deal with LR scheduling
-        if self.train_actor:
-            self.actor_lr_scheduler.step()
-        self.critic_lr_scheduler.step()
+        if update_schedules:
+            self.step_lr_schedules()
 
         return {
             **actor_info,
@@ -386,3 +423,8 @@ class SoftActorCritic(nn.Module):
             "actor_lr": self.actor_lr_scheduler.get_last_lr()[0],
             "critic_lr": self.critic_lr_scheduler.get_last_lr()[0],
         }
+
+    def step_lr_schedules(self):
+        if self.train_actor:
+            self.actor_lr_scheduler.step()
+        self.critic_lr_scheduler.step()

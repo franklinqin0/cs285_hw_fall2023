@@ -1,4 +1,6 @@
 import unittest
+import copy
+from unittest.mock import patch
 
 import numpy as np
 import torch
@@ -53,6 +55,23 @@ class SACBootstrappingTest(unittest.TestCase):
         self.agent.num_critic_networks = 3
         values = torch.tensor([[1.0, 8.0], [3.0, 2.0], [5.0, 5.0]])
         expected = torch.tensor([[3.0, 5.0]]).expand(3, 2)
+        torch.testing.assert_close(self.agent.q_backup_strategy(values), expected)
+
+    def test_redq_uses_a_distinct_pair_per_transition(self):
+        self.agent.num_critic_networks = 4
+        self.agent.target_critic_backup_type = "redq"
+        values = torch.tensor([[1., 10., 100.], [2., 20., 200.], [3., 30., 300.], [4., 40., 400.]])
+        # The second raw index skips the first: pairs (0,1), (2,3), (3,1).
+        with patch("torch.randint", side_effect=[torch.tensor([[0, 2, 3]]), torch.tensor([[0, 2, 1]])]):
+            actual = self.agent.q_backup_strategy(values)
+        expected = torch.tensor([[1., 30., 200.]]).expand(4, 3)
+        torch.testing.assert_close(actual, expected)
+
+    def test_redq_with_two_critics_is_clipped_double_q(self):
+        self.agent.num_critic_networks = 2
+        self.agent.target_critic_backup_type = "redq"
+        values = torch.randn(2, 100)
+        expected = values.min(0).values.expand(2, 100)
         torch.testing.assert_close(self.agent.q_backup_strategy(values), expected)
 
     def test_fixed_actor_and_hard_target_schedule(self):
@@ -111,6 +130,51 @@ class SACBootstrappingTest(unittest.TestCase):
             self.assertEqual(len(path["reward"]), 7)
         finally:
             env.close()
+
+    def test_skipping_stats_preserves_updates_and_rng(self):
+        for train_actor in (False, True):
+            for gradient_type in ("reinforce", "reparametrize"):
+                with self.subTest(train_actor=train_actor, gradient_type=gradient_type):
+                    logged = SoftActorCritic((3,), 1, **self.config["agent_kwargs"])
+                    quiet = SoftActorCritic((3,), 1, **self.config["agent_kwargs"])
+                    for agent in (logged, quiet):
+                        agent.load_state_dict(self.agent.state_dict())
+                        agent.train_actor = train_actor
+                        agent.actor_gradient_type = gradient_type
+                        agent.num_critic_updates = 2
+                        agent.use_entropy_bonus = True
+                        agent.temperature = 0.1
+                    torch.manual_seed(42)
+                    logged.update(**self.batch, step=0)
+                    expected_rng = torch.get_rng_state()
+                    torch.manual_seed(42)
+                    stats = quiet.update(**self.batch, step=0, log_stats=False)
+                    self.assertNotIn("critic_loss", stats)
+                    self.assertNotIn("actor_loss", stats)
+                    torch.testing.assert_close(torch.get_rng_state(), expected_rng)
+                    for name, value in logged.state_dict().items():
+                        torch.testing.assert_close(value, quiet.state_dict()[name], rtol=0, atol=0)
+
+    def test_actor_update_preserves_policy_gradient_without_critic_gradients(self):
+        self.agent.actor_gradient_type = "reparametrize"
+        self.agent.use_entropy_bonus = True
+        self.agent.temperature = 0.1
+        reference = copy.deepcopy(self.agent)
+        torch.manual_seed(42)
+        loss, entropy = reference.actor_loss_reparametrize(self.batch["observations"])
+        loss = loss - reference.temperature * entropy
+        reference.actor_optimizer.zero_grad()
+        loss.backward()
+        reference.actor_optimizer.step()
+
+        before = [p.detach().clone() for p in self.agent.actor.parameters()]
+        torch.manual_seed(42)
+        self.agent.update_actor(self.batch["observations"], log_stats=False)
+        for expected, actual in zip(reference.actor.parameters(), self.agent.actor.parameters()):
+            torch.testing.assert_close(expected, actual)
+        self.assertTrue(any(not torch.equal(old, new) for old, new in zip(before, self.agent.actor.parameters())))
+        self.assertTrue(all(p.grad is None for p in self.agent.critics.parameters()))
+        self.assertTrue(all(p.requires_grad for p in self.agent.critics.parameters()))
 
 
 if __name__ == "__main__":
